@@ -20,6 +20,12 @@ import (
 )
 
 const (
+	// SeedCloudProviderSecretName is the name of the Secret of Seed's cloud provider credentials
+	SeedCloudProviderSecretName = "vm-image-owner"
+
+	// SeedCloudProviderSecretNamespace is the namespace of the Secret of Seed's cloud provider credentials
+	SeedCloudProviderSecretNamespace = "garden"
+
 	// TerraformerPurpose is the Terraformer purpose for infrastructure operations.
 	TerraformerPurpose = "infra"
 

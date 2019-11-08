@@ -24,6 +24,7 @@ import (
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/alicloud"
 	alicloudclient "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/alicloud/client"
 	alicloudv1alpha1 "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/alicloud/v1alpha1"
+	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/config"
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/controller/common"
 	extensioncontroller "github.com/gardener/gardener-extensions/pkg/controller"
 	controllererrors "github.com/gardener/gardener-extensions/pkg/controller/error"
@@ -32,9 +33,11 @@ import (
 	"github.com/gardener/gardener-extensions/pkg/terraformer"
 	chartutil "github.com/gardener/gardener-extensions/pkg/util/chart"
 
+	confighelper "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/config/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -55,31 +58,37 @@ var StatusTypeMeta = func() metav1.TypeMeta {
 }()
 
 // NewActuator instantiates an actuator with the default dependencies.
-func NewActuator() infrastructure.Actuator {
+func NewActuator(machineImageMapping []config.MachineImage) infrastructure.Actuator {
 	return NewActuatorWithDeps(
 		log.Log.WithName("infrastructure-actuator"),
+		alicloudclient.NewClientFactory(),
 		alicloudclient.DefaultFactory(),
 		terraformer.DefaultFactory(),
 		extensionschartrenderer.DefaultFactory(),
 		DefaultTerraformOps(),
+		machineImageMapping,
 	)
 }
 
 // NewActuatorWithDeps instantiates an actuator with the given dependencies.
 func NewActuatorWithDeps(
 	logger logr.Logger,
+	newClientFactory alicloudclient.ClientFactory,
 	alicloudClientFactory alicloudclient.Factory,
 	terraformerFactory terraformer.Factory,
 	chartRendererFactory extensionschartrenderer.Factory,
 	terraformChartOps TerraformChartOps,
+	machineImageMapping []config.MachineImage,
 ) infrastructure.Actuator {
 	a := &actuator{
 		logger: logger,
 
+		newClientFactory:      newClientFactory,
 		alicloudClientFactory: alicloudClientFactory,
 		terraformerFactory:    terraformerFactory,
 		chartRendererFactory:  chartRendererFactory,
 		terraformChartOps:     terraformChartOps,
+		machineImageMapping:   machineImageMapping,
 	}
 
 	return a
@@ -89,6 +98,8 @@ type actuator struct {
 	decoder runtime.Decoder
 	logger  logr.Logger
 
+	alicloudECSClient     alicloudclient.ECS
+	newClientFactory      alicloudclient.ClientFactory
 	alicloudClientFactory alicloudclient.Factory
 	terraformerFactory    terraformer.Factory
 	chartRendererFactory  extensionschartrenderer.Factory
@@ -98,6 +109,13 @@ type actuator struct {
 	config *rest.Config
 
 	chartRenderer chartrenderer.Interface
+
+	machineImageMapping []config.MachineImage
+}
+
+func (a *actuator) InjectSeedAlicloudECSClient(alicloudECSClient alicloudclient.ECS) error {
+	a.alicloudECSClient = alicloudECSClient
+	return nil
 }
 
 func (a *actuator) InjectScheme(scheme *runtime.Scheme) error {
@@ -265,8 +283,96 @@ func computeProviderStatusVSwitches(infrastructure *alicloudv1alpha1.Infrastruct
 	return vswitchesToReturn, nil
 }
 
+// getSeedCloudProviderCredentials gets Seed's cloud provider's credentials
+func (a *actuator) getSeedCloudProviderCredentials(ctx context.Context) (*alicloud.Credentials, error) {
+	secretRef := &corev1.SecretReference{
+		Name:      SeedCloudProviderSecretName,
+		Namespace: SeedCloudProviderSecretNamespace,
+	}
+	credentials, err := alicloud.ReadCredentialsFromSecretRef(ctx, a.client, secretRef)
+	if err != nil {
+		return nil, err
+	}
+	return credentials, nil
+}
+
+// shareCustomizedImages checks whether Shoot's Alicloud account has permissions to use the customized images. If it can't
+// access them, these images will be shared with it from Seed's Alicloud account.
+func (a *actuator) shareCustomizedImages(ctx context.Context, infra *extensionsv1alpha1.Infrastructure, cluster *extensioncontroller.Cluster) error {
+	regionID := cluster.Shoot.Spec.Region
+	if a.alicloudECSClient == nil {
+		a.logger.Info("Creating Alicloud ECS client for Seed", "infrastructure", infra.Name)
+		seedCloudProviderCredentials, err := a.getSeedCloudProviderCredentials(ctx)
+		if err != nil {
+			return err
+		}
+		a.alicloudECSClient, err = a.newClientFactory.NewECSClient(ctx, regionID, seedCloudProviderCredentials.AccessKeyID, seedCloudProviderCredentials.AccessKeySecret)
+		if err != nil {
+			return err
+		}
+	}
+
+	workers := cluster.Shoot.Spec.Provider.Workers
+	_, shootCloudProviderCredentials, err := a.getConfigAndCredentialsForInfra(ctx, infra)
+	if err != nil {
+		return err
+	}
+	a.logger.Info("Creating Alicloud ECS client for Shoot", "infrastructure", infra.Name)
+	shootAlicloudECSClient, err := a.newClientFactory.NewECSClient(ctx, regionID, shootCloudProviderCredentials.AccessKeyID, shootCloudProviderCredentials.AccessKeySecret)
+	if err != nil {
+		return err
+	}
+	a.logger.Info("Creating Alicloud STS client for Shoot", "infrastructure", infra.Name)
+	shootAlicloudSTSClient, err := a.newClientFactory.NewSTSClient(ctx, regionID, shootCloudProviderCredentials.AccessKeyID, shootCloudProviderCredentials.AccessKeySecret)
+	if err != nil {
+		return err
+	}
+
+	shootCloudProviderAccountID, err := shootAlicloudSTSClient.GetAccountIDFromCallerIdentity(ctx)
+	if err != nil {
+		return err
+	}
+
+	a.logger.Info("Sharing customized image with Shoot's Alicloud account from Seed", "infrastructure", infra.Name)
+	for _, worker := range workers {
+		imageName := worker.Machine.Image.Name
+		imageVersion := worker.Machine.Image.Version
+		imageID, err := confighelper.FindImageForRegion(a.machineImageMapping, imageName, imageVersion, regionID)
+		if err != nil {
+			return err
+		}
+
+		exists, err := shootAlicloudECSClient.CheckIfImageExists(ctx, imageID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		err = a.alicloudECSClient.ShareImageToAccount(ctx, imageID, shootCloudProviderAccountID)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Reconcile implements infrastructure.Actuator.
 func (a *actuator) Reconcile(ctx context.Context, infra *extensionsv1alpha1.Infrastructure, cluster *extensioncontroller.Cluster) error {
+	if a.alicloudECSClient == nil {
+		a.logger.Info("Creating Alicloud ECS client for Seed", "infrastructure", infra.Name)
+		regionID := cluster.Shoot.Spec.Region
+		seedCloudProviderCredentials, err := a.getSeedCloudProviderCredentials(ctx)
+		if err != nil {
+			return err
+		}
+		a.alicloudECSClient, err = a.newClientFactory.NewECSClient(ctx, regionID, seedCloudProviderCredentials.AccessKeyID, seedCloudProviderCredentials.AccessKeySecret)
+		if err != nil {
+			return err
+		}
+	}
+
 	config, credentials, err := a.getConfigAndCredentialsForInfra(ctx, infra)
 	if err != nil {
 		return err
@@ -298,6 +404,11 @@ func (a *actuator) Reconcile(ctx context.Context, infra *extensionsv1alpha1.Infr
 	status, err := a.extractStatus(tf, config)
 	if err != nil {
 		return err
+	}
+
+	err = a.shareCustomizedImages(ctx, infra, cluster)
+	if err != nil {
+		return nil
 	}
 
 	return extensioncontroller.TryUpdateStatus(ctx, retry.DefaultBackoff, a.client, infra, func() error {

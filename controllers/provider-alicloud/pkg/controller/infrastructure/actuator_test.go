@@ -23,6 +23,7 @@ import (
 	alicloudclient "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/alicloud/client"
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/alicloud/install"
 	alicloudv1alpha1 "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/alicloud/v1alpha1"
+	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/config"
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/controller/common"
 	. "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/controller/infrastructure"
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/imagevector"
@@ -35,6 +36,7 @@ import (
 	mockgardenerchartrenderer "github.com/gardener/gardener-extensions/pkg/mock/gardener/chartrenderer"
 	"github.com/gardener/gardener-extensions/pkg/mock/go-logr/logr"
 	"github.com/gardener/gardener-extensions/pkg/util/chart"
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/vpc"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
@@ -92,18 +94,31 @@ var _ = Describe("Actuator", func() {
 		Describe("#Reconcile", func() {
 			It("should correctly reconcile the infrastructure", func() {
 				var (
-					ctx                   = context.TODO()
-					logger                = logr.NewMockLogger(ctrl)
-					alicloudClientFactory = mockalicloudclient.NewMockFactory(ctrl)
-					vpcClient             = mockalicloudclient.NewMockVPC(ctrl)
-					terraformerFactory    = mockterraformer.NewMockFactory(ctrl)
-					terraformer           = mockterraformer.NewMockTerraformer(ctrl)
-					chartRendererFactory  = mockchartrenderer.NewMockFactory(ctrl)
-					terraformChartOps     = mockinfrastructure.NewMockTerraformChartOps(ctrl)
-					actuator              = NewActuatorWithDeps(logger, alicloudClientFactory, terraformerFactory, chartRendererFactory, terraformChartOps)
-					c                     = mockclient.NewMockClient(ctrl)
-					initializer           = mockterraformer.NewMockInitializer(ctrl)
-					restConfig            rest.Config
+					ctx                      = context.TODO()
+					logger                   = logr.NewMockLogger(ctrl)
+					newAlicloudClientFactory = mockalicloudclient.NewMockClientFactory(ctrl)
+					alicloudClientFactory    = mockalicloudclient.NewMockFactory(ctrl)
+					vpcClient                = mockalicloudclient.NewMockVPC(ctrl)
+					terraformerFactory       = mockterraformer.NewMockFactory(ctrl)
+					terraformer              = mockterraformer.NewMockTerraformer(ctrl)
+					seedECSClient            = mockalicloudclient.NewMockECS(ctrl)
+					shootECSClient           = mockalicloudclient.NewMockECS(ctrl)
+					shootSTSClient           = mockalicloudclient.NewMockSTS(ctrl)
+					chartRendererFactory     = mockchartrenderer.NewMockFactory(ctrl)
+					terraformChartOps        = mockinfrastructure.NewMockTerraformChartOps(ctrl)
+					machineImageMapping      = []config.MachineImage{}
+					actuator                 = NewActuatorWithDeps(
+						logger,
+						newAlicloudClientFactory,
+						alicloudClientFactory,
+						terraformerFactory,
+						chartRendererFactory,
+						terraformChartOps,
+						machineImageMapping,
+					)
+					c           = mockclient.NewMockClient(ctrl)
+					initializer = mockterraformer.NewMockInitializer(ctrl)
+					restConfig  rest.Config
 
 					chartRenderer = mockgardenerchartrenderer.NewMockInterface(ctrl)
 
@@ -133,7 +148,13 @@ var _ = Describe("Actuator", func() {
 					}
 					accessKeyID     = "accessKeyID"
 					accessKeySecret = "accessKeySecret"
-					cluster         = controller.Cluster{}
+					cluster         = controller.Cluster{
+						Shoot: &gardencorev1alpha1.Shoot{
+							Spec: gardencorev1alpha1.ShootSpec{
+								Region: region,
+							},
+						},
+					}
 
 					initializerValues = InitializerValues{}
 					chartValues       = map[string]interface{}{}
@@ -154,6 +175,16 @@ var _ = Describe("Actuator", func() {
 
 				gomock.InOrder(
 					chartRendererFactory.EXPECT().NewForConfig(&restConfig).Return(chartRenderer, nil),
+
+					logger.EXPECT().Info("Creating Alicloud ECS client for Seed", "infrastructure", infra.Name),
+					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: SeedCloudProviderSecretNamespace, Name: SeedCloudProviderSecretName}, gomock.AssignableToTypeOf(&corev1.Secret{})).
+						SetArg(2, corev1.Secret{
+							Data: map[string][]byte{
+								alicloud.AccessKeyID:     []byte(accessKeyID),
+								alicloud.AccessKeySecret: []byte(accessKeySecret),
+							},
+						}),
+					newAlicloudClientFactory.EXPECT().NewECSClient(ctx, region, accessKeyID, accessKeySecret).Return(seedECSClient, nil),
 
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: secretNamespace, Name: secretName}, gomock.AssignableToTypeOf(&corev1.Secret{})).
 						SetArg(2, corev1.Secret{
@@ -222,6 +253,20 @@ var _ = Describe("Actuator", func() {
 							TerraformerOutputKeySecurityGroupID: securityGroupID,
 							TerraformerOutputKeyKeyPairName:     keyPairName,
 						}, nil),
+
+					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: secretNamespace, Name: secretName}, gomock.AssignableToTypeOf(&corev1.Secret{})).
+						SetArg(2, corev1.Secret{
+							Data: map[string][]byte{
+								alicloud.AccessKeyID:     []byte(accessKeyID),
+								alicloud.AccessKeySecret: []byte(accessKeySecret),
+							},
+						}),
+					logger.EXPECT().Info("Creating Alicloud ECS client for Shoot", "infrastructure", infra.Name),
+					newAlicloudClientFactory.EXPECT().NewECSClient(ctx, region, accessKeyID, accessKeySecret).Return(shootECSClient, nil),
+					logger.EXPECT().Info("Creating Alicloud STS client for Shoot", "infrastructure", infra.Name),
+					newAlicloudClientFactory.EXPECT().NewSTSClient(ctx, region, accessKeyID, accessKeySecret).Return(shootSTSClient, nil),
+					shootSTSClient.EXPECT().GetAccountIDFromCallerIdentity(ctx).Return("", nil),
+					logger.EXPECT().Info("Sharing customized image with Shoot's Alicloud account from Seed", "infrastructure", infra.Name),
 
 					c.EXPECT().Status().Return(c),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: infra.Namespace, Name: infra.Name}, &infra),
