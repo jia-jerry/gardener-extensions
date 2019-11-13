@@ -23,6 +23,7 @@ import (
 
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/alicloud"
 	alicloudclient "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/alicloud/client"
+	apisalicloud "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/alicloud"
 	alicloudv1alpha1 "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/alicloud/v1alpha1"
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/config"
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/controller/common"
@@ -33,10 +34,10 @@ import (
 	"github.com/gardener/gardener-extensions/pkg/terraformer"
 	chartutil "github.com/gardener/gardener-extensions/pkg/util/chart"
 
-	confighelper "github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/config/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -98,6 +99,7 @@ func NewActuatorWithDeps(
 }
 
 type actuator struct {
+	scheme  *runtime.Scheme
 	decoder runtime.Decoder
 	logger  logr.Logger
 
@@ -113,17 +115,13 @@ type actuator struct {
 
 	chartRenderer chartrenderer.Interface
 
-	machineImageMapping []config.MachineImage
-
+	machineImageMapping        []config.MachineImage
 	machineImageOwnerSecretRef *corev1.SecretReference
-}
-
-func (a *actuator) InjectSeedAlicloudECSClient(alicloudECSClient alicloudclient.ECS) error {
-	a.alicloudECSClient = alicloudECSClient
-	return nil
+	machineImages              []apisalicloud.MachineImage
 }
 
 func (a *actuator) InjectScheme(scheme *runtime.Scheme) error {
+	a.scheme = scheme
 	a.decoder = serializer.NewCodecFactory(scheme).UniversalDeserializer()
 	return nil
 }
@@ -288,92 +286,8 @@ func computeProviderStatusVSwitches(infrastructure *alicloudv1alpha1.Infrastruct
 	return vswitchesToReturn, nil
 }
 
-// getSeedCloudProviderCredentials gets Seed's cloud provider's credentials
-func (a *actuator) getSeedCloudProviderCredentials(ctx context.Context) (*alicloud.Credentials, error) {
-	credentials, err := alicloud.ReadCredentialsFromSecretRef(ctx, a.client, a.machineImageOwnerSecretRef)
-	if err != nil {
-		return nil, err
-	}
-	return credentials, nil
-}
-
-// shareCustomizedImages checks whether Shoot's Alicloud account has permissions to use the customized images. If it can't
-// access them, these images will be shared with it from Seed's Alicloud account.
-func (a *actuator) shareCustomizedImages(ctx context.Context, infra *extensionsv1alpha1.Infrastructure, cluster *extensioncontroller.Cluster) error {
-	regionID := cluster.Shoot.Spec.Region
-	if a.alicloudECSClient == nil {
-		a.logger.Info("Creating Alicloud ECS client for Seed", "infrastructure", infra.Name)
-		seedCloudProviderCredentials, err := a.getSeedCloudProviderCredentials(ctx)
-		if err != nil {
-			return err
-		}
-		a.alicloudECSClient, err = a.newClientFactory.NewECSClient(ctx, regionID, seedCloudProviderCredentials.AccessKeyID, seedCloudProviderCredentials.AccessKeySecret)
-		if err != nil {
-			return err
-		}
-	}
-
-	workers := cluster.Shoot.Spec.Provider.Workers
-	_, shootCloudProviderCredentials, err := a.getConfigAndCredentialsForInfra(ctx, infra)
-	if err != nil {
-		return err
-	}
-	a.logger.Info("Creating Alicloud ECS client for Shoot", "infrastructure", infra.Name)
-	shootAlicloudECSClient, err := a.newClientFactory.NewECSClient(ctx, regionID, shootCloudProviderCredentials.AccessKeyID, shootCloudProviderCredentials.AccessKeySecret)
-	if err != nil {
-		return err
-	}
-	a.logger.Info("Creating Alicloud STS client for Shoot", "infrastructure", infra.Name)
-	shootAlicloudSTSClient, err := a.newClientFactory.NewSTSClient(ctx, regionID, shootCloudProviderCredentials.AccessKeyID, shootCloudProviderCredentials.AccessKeySecret)
-	if err != nil {
-		return err
-	}
-
-	shootCloudProviderAccountID, err := shootAlicloudSTSClient.GetAccountIDFromCallerIdentity(ctx)
-	if err != nil {
-		return err
-	}
-
-	a.logger.Info("Sharing customized image with Shoot's Alicloud account from Seed", "infrastructure", infra.Name)
-	for _, worker := range workers {
-		imageName := worker.Machine.Image.Name
-		imageVersion := worker.Machine.Image.Version
-		imageID, err := confighelper.FindImageForRegion(a.machineImageMapping, imageName, imageVersion, regionID)
-		if err != nil {
-			return err
-		}
-
-		exists, err := shootAlicloudECSClient.CheckIfImageExists(ctx, imageID)
-		if err != nil {
-			return err
-		}
-		if exists {
-			continue
-		}
-		err = a.alicloudECSClient.ShareImageToAccount(ctx, imageID, shootCloudProviderAccountID)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // Reconcile implements infrastructure.Actuator.
 func (a *actuator) Reconcile(ctx context.Context, infra *extensionsv1alpha1.Infrastructure, cluster *extensioncontroller.Cluster) error {
-	if a.alicloudECSClient == nil {
-		a.logger.Info("Creating Alicloud ECS client for Seed", "infrastructure", infra.Name)
-		regionID := cluster.Shoot.Spec.Region
-		seedCloudProviderCredentials, err := a.getSeedCloudProviderCredentials(ctx)
-		if err != nil {
-			return err
-		}
-		a.alicloudECSClient, err = a.newClientFactory.NewECSClient(ctx, regionID, seedCloudProviderCredentials.AccessKeyID, seedCloudProviderCredentials.AccessKeySecret)
-		if err != nil {
-			return err
-		}
-	}
-
 	config, credentials, err := a.getConfigAndCredentialsForInfra(ctx, infra)
 	if err != nil {
 		return err
@@ -409,7 +323,15 @@ func (a *actuator) Reconcile(ctx context.Context, infra *extensionsv1alpha1.Infr
 
 	err = a.shareCustomizedImages(ctx, infra, cluster)
 	if err != nil {
-		return nil
+		return err
+	}
+
+	machineImages, err := a.getMachineImages(ctx, infra, cluster)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get the machine images")
+	}
+	if err := a.updateInfrastructureStatusMachineImages(ctx, infra, machineImages); err != nil {
+		return errors.Wrapf(err, "failed to update the machine images in infrastructure status")
 	}
 
 	return extensioncontroller.TryUpdateStatus(ctx, retry.DefaultBackoff, a.client, infra, func() error {

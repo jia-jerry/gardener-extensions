@@ -18,7 +18,9 @@ import (
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/alicloud"
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/config"
 	"github.com/gardener/gardener-extensions/pkg/controller/infrastructure"
+	machinescheme "github.com/gardener/machine-controller-manager/pkg/client/clientset/versioned/scheme"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
@@ -43,6 +45,14 @@ type AddOptions struct {
 // AddToManagerWithOptions adds a controller with the given AddOptions to the given manager.
 // The opts.Reconciler is being set with a newly instantiated actuator.
 func AddToManagerWithOptions(mgr manager.Manager, options AddOptions) error {
+	scheme := mgr.GetScheme()
+	if err := apiextensionsscheme.AddToScheme(scheme); err != nil {
+		return err
+	}
+	if err := machinescheme.AddToScheme(scheme); err != nil {
+		return err
+	}
+
 	return infrastructure.Add(mgr, infrastructure.AddArgs{
 		Actuator:          NewActuator(options.MachineImages, options.MachineImageOwnerSecretRef),
 		ControllerOptions: options.Controller,
