@@ -94,20 +94,21 @@ var _ = Describe("Actuator", func() {
 		Describe("#Reconcile", func() {
 			It("should correctly reconcile the infrastructure", func() {
 				var (
-					ctx                      = context.TODO()
-					logger                   = logr.NewMockLogger(ctrl)
-					newAlicloudClientFactory = mockalicloudclient.NewMockClientFactory(ctrl)
-					alicloudClientFactory    = mockalicloudclient.NewMockFactory(ctrl)
-					vpcClient                = mockalicloudclient.NewMockVPC(ctrl)
-					terraformerFactory       = mockterraformer.NewMockFactory(ctrl)
-					terraformer              = mockterraformer.NewMockTerraformer(ctrl)
-					seedECSClient            = mockalicloudclient.NewMockECS(ctrl)
-					shootECSClient           = mockalicloudclient.NewMockECS(ctrl)
-					shootSTSClient           = mockalicloudclient.NewMockSTS(ctrl)
-					chartRendererFactory     = mockchartrenderer.NewMockFactory(ctrl)
-					terraformChartOps        = mockinfrastructure.NewMockTerraformChartOps(ctrl)
-					machineImageMapping      = []config.MachineImage{}
-					actuator                 = NewActuatorWithDeps(
+					ctx                         = context.TODO()
+					logger                      = logr.NewMockLogger(ctrl)
+					newAlicloudClientFactory    = mockalicloudclient.NewMockClientFactory(ctrl)
+					alicloudClientFactory       = mockalicloudclient.NewMockFactory(ctrl)
+					vpcClient                   = mockalicloudclient.NewMockVPC(ctrl)
+					terraformerFactory          = mockterraformer.NewMockFactory(ctrl)
+					terraformer                 = mockterraformer.NewMockTerraformer(ctrl)
+					seedECSClient               = mockalicloudclient.NewMockECS(ctrl)
+					shootECSClient              = mockalicloudclient.NewMockECS(ctrl)
+					shootSTSClient              = mockalicloudclient.NewMockSTS(ctrl)
+					chartRendererFactory        = mockchartrenderer.NewMockFactory(ctrl)
+					terraformChartOps           = mockinfrastructure.NewMockTerraformChartOps(ctrl)
+					machineImageMapping         = []config.MachineImage{}
+					machineImageOwnerSercretRef = &corev1.SecretReference{"machine-image-owner", "garden"}
+					actuator                    = NewActuatorWithDeps(
 						logger,
 						newAlicloudClientFactory,
 						alicloudClientFactory,
@@ -115,6 +116,7 @@ var _ = Describe("Actuator", func() {
 						chartRendererFactory,
 						terraformChartOps,
 						machineImageMapping,
+						machineImageOwnerSercretRef,
 					)
 					c           = mockclient.NewMockClient(ctrl)
 					initializer = mockterraformer.NewMockInitializer(ctrl)
@@ -177,7 +179,7 @@ var _ = Describe("Actuator", func() {
 					chartRendererFactory.EXPECT().NewForConfig(&restConfig).Return(chartRenderer, nil),
 
 					logger.EXPECT().Info("Creating Alicloud ECS client for Seed", "infrastructure", infra.Name),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: SeedCloudProviderSecretNamespace, Name: SeedCloudProviderSecretName}, gomock.AssignableToTypeOf(&corev1.Secret{})).
+					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: "garden", Name: "machine-image-owner"}, gomock.AssignableToTypeOf(&corev1.Secret{})).
 						SetArg(2, corev1.Secret{
 							Data: map[string][]byte{
 								alicloud.AccessKeyID:     []byte(accessKeyID),

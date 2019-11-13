@@ -18,6 +18,7 @@ import (
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/alicloud"
 	"github.com/gardener/gardener-extensions/controllers/provider-alicloud/pkg/apis/config"
 	"github.com/gardener/gardener-extensions/pkg/controller/infrastructure"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
@@ -35,13 +36,15 @@ type AddOptions struct {
 	IgnoreOperationAnnotation bool
 	// MachineImages is the default list of machine images.
 	MachineImages []config.MachineImage
+	// MachineImageOwnerSecretRef is the secret reference which contains credential of AliCloud subaccount for customized images.
+	MachineImageOwnerSecretRef *corev1.SecretReference
 }
 
 // AddToManagerWithOptions adds a controller with the given AddOptions to the given manager.
 // The opts.Reconciler is being set with a newly instantiated actuator.
 func AddToManagerWithOptions(mgr manager.Manager, options AddOptions) error {
 	return infrastructure.Add(mgr, infrastructure.AddArgs{
-		Actuator:          NewActuator(options.MachineImages),
+		Actuator:          NewActuator(options.MachineImages, options.MachineImageOwnerSecretRef),
 		ControllerOptions: options.Controller,
 		Predicates:        infrastructure.DefaultPredicates(options.IgnoreOperationAnnotation),
 		Type:              alicloud.Type,
