@@ -56,6 +56,9 @@ config:
     regions:
     - imageID: m-t4n09r2ooaf9a9gzq18f
       region: ap-southeast-1
+  machineImageOwnerSecretRef:
+    name: machine-image-owner
+    namespace: garden
   etcd:
     storage:
       className: gardener.cloud-fast

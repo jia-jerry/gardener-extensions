@@ -58,7 +58,7 @@ var StatusTypeMeta = func() metav1.TypeMeta {
 }()
 
 // NewActuator instantiates an actuator with the default dependencies.
-func NewActuator(machineImageMapping []config.MachineImage) infrastructure.Actuator {
+func NewActuator(machineImageMapping []config.MachineImage, machineImageOwnerSecretRef *corev1.SecretReference) infrastructure.Actuator {
 	return NewActuatorWithDeps(
 		log.Log.WithName("infrastructure-actuator"),
 		alicloudclient.NewClientFactory(),
@@ -67,6 +67,7 @@ func NewActuator(machineImageMapping []config.MachineImage) infrastructure.Actua
 		extensionschartrenderer.DefaultFactory(),
 		DefaultTerraformOps(),
 		machineImageMapping,
+		machineImageOwnerSecretRef,
 	)
 }
 
@@ -79,16 +80,18 @@ func NewActuatorWithDeps(
 	chartRendererFactory extensionschartrenderer.Factory,
 	terraformChartOps TerraformChartOps,
 	machineImageMapping []config.MachineImage,
+	machineImageOwnerSecretRef *corev1.SecretReference,
 ) infrastructure.Actuator {
 	a := &actuator{
 		logger: logger,
 
-		newClientFactory:      newClientFactory,
-		alicloudClientFactory: alicloudClientFactory,
-		terraformerFactory:    terraformerFactory,
-		chartRendererFactory:  chartRendererFactory,
-		terraformChartOps:     terraformChartOps,
-		machineImageMapping:   machineImageMapping,
+		newClientFactory:           newClientFactory,
+		alicloudClientFactory:      alicloudClientFactory,
+		terraformerFactory:         terraformerFactory,
+		chartRendererFactory:       chartRendererFactory,
+		terraformChartOps:          terraformChartOps,
+		machineImageMapping:        machineImageMapping,
+		machineImageOwnerSecretRef: machineImageOwnerSecretRef,
 	}
 
 	return a
@@ -111,6 +114,8 @@ type actuator struct {
 	chartRenderer chartrenderer.Interface
 
 	machineImageMapping []config.MachineImage
+
+	machineImageOwnerSecretRef *corev1.SecretReference
 }
 
 func (a *actuator) InjectSeedAlicloudECSClient(alicloudECSClient alicloudclient.ECS) error {
@@ -285,11 +290,7 @@ func computeProviderStatusVSwitches(infrastructure *alicloudv1alpha1.Infrastruct
 
 // getSeedCloudProviderCredentials gets Seed's cloud provider's credentials
 func (a *actuator) getSeedCloudProviderCredentials(ctx context.Context) (*alicloud.Credentials, error) {
-	secretRef := &corev1.SecretReference{
-		Name:      SeedCloudProviderSecretName,
-		Namespace: SeedCloudProviderSecretNamespace,
-	}
-	credentials, err := alicloud.ReadCredentialsFromSecretRef(ctx, a.client, secretRef)
+	credentials, err := alicloud.ReadCredentialsFromSecretRef(ctx, a.client, a.machineImageOwnerSecretRef)
 	if err != nil {
 		return nil, err
 	}
