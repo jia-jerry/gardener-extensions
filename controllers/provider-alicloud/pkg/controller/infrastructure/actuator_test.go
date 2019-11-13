@@ -178,16 +178,6 @@ var _ = Describe("Actuator", func() {
 				gomock.InOrder(
 					chartRendererFactory.EXPECT().NewForConfig(&restConfig).Return(chartRenderer, nil),
 
-					logger.EXPECT().Info("Creating Alicloud ECS client for Seed", "infrastructure", infra.Name),
-					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: "garden", Name: "machine-image-owner"}, gomock.AssignableToTypeOf(&corev1.Secret{})).
-						SetArg(2, corev1.Secret{
-							Data: map[string][]byte{
-								alicloud.AccessKeyID:     []byte(accessKeyID),
-								alicloud.AccessKeySecret: []byte(accessKeySecret),
-							},
-						}),
-					newAlicloudClientFactory.EXPECT().NewECSClient(ctx, region, accessKeyID, accessKeySecret).Return(seedECSClient, nil),
-
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: secretNamespace, Name: secretName}, gomock.AssignableToTypeOf(&corev1.Secret{})).
 						SetArg(2, corev1.Secret{
 							Data: map[string][]byte{
@@ -256,6 +246,15 @@ var _ = Describe("Actuator", func() {
 							TerraformerOutputKeyKeyPairName:     keyPairName,
 						}, nil),
 
+					logger.EXPECT().Info("Creating Alicloud ECS client for Seed", "infrastructure", infra.Name),
+					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: "garden", Name: "machine-image-owner"}, gomock.AssignableToTypeOf(&corev1.Secret{})).
+						SetArg(2, corev1.Secret{
+							Data: map[string][]byte{
+								alicloud.AccessKeyID:     []byte(accessKeyID),
+								alicloud.AccessKeySecret: []byte(accessKeySecret),
+							},
+						}),
+					newAlicloudClientFactory.EXPECT().NewECSClient(ctx, region, accessKeyID, accessKeySecret).Return(seedECSClient, nil),
 					c.EXPECT().Get(ctx, client.ObjectKey{Namespace: secretNamespace, Name: secretName}, gomock.AssignableToTypeOf(&corev1.Secret{})).
 						SetArg(2, corev1.Secret{
 							Data: map[string][]byte{
