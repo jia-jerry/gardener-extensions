@@ -13,8 +13,8 @@ images:
   tag: "0.7.3"
 - name: alicloud-controller-manager
   sourceRepository: https://github.com/kubernetes/cloud-provider-alibaba-cloud
-  repository: registry.eu-central-1.aliyuncs.com/gardener-de/alibaba-cloud-controller-manager
-  tag: "1.9.8"
+  repository: registry.eu-central-1.aliyuncs.com/acs/cloud-controller-manager-amd64
+  tag: "v1.9.3.200-g74ee8ae-aliyun"
 - name: csi-attacher
   sourceRepository: https://github.com/kubernetes-csi/external-attacher
   repository: quay.io/k8scsi/csi-attacher
@@ -60,6 +60,6 @@ images:
   repository: quay.io/k8scsi/csi-resizer
   tag: v0.3.0
 - name: csi-plugin-alicloud
-  sourceRepository: https://github.com/AliyunContainerService/csi-plugin
-  repository: registry.eu-central-1.aliyuncs.com/gardener-de/csi-plugin-alicloud
-  tag: v1.13.2-3
+  sourceRepository: https://github.com/kubernetes-sigs/alibaba-cloud-csi-driver
+  repository: registry.eu-central-1.aliyuncs.com/acs/csi-plugin
+  tag: v1.14.8.29-6a3e94b-aliyun
